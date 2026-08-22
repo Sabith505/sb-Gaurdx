@@ -33,8 +33,7 @@ let currentStatusMode = "online";
 let autoStatusIndex = 0;
 const autoStatuses = ["online", "idle", "dnd"];
 
-const commands = [
-  new SlashCommandBuilder()
+const guardexCommand = new SlashCommandBuilder()
     .setName("guardex")
     .setDescription("SB Guardex controls")
     .addSubcommand(s => s.setName("monitor-add").setDescription("Add a bot health/status URL")
@@ -59,28 +58,49 @@ const commands = [
           { name: "Invisible", value: "invisible" },
           { name: "Auto (1 hour)", value: "auto" }
         )))
+    .addSubcommand(s => s.setName("status").setDescription("Change Guardex Discord status")
+      .addStringOption(o => o.setName("status").setDescription("Choose a status").setRequired(true)
+        .addChoices(
+          { name: "Online", value: "online" },
+          { name: "Idle", value: "idle" },
+          { name: "DND", value: "dnd" },
+          { name: "Invisible", value: "invisible" },
+          { name: "Auto (1 hour)", value: "auto" }
+        )))
     .addSubcommand(s => s.setName("credits").setDescription("Show SB Guardex credits"))
-    .toJSON()
-];
+    .toJSON();
+
+const gaurdxCommand = JSON.parse(JSON.stringify(guardexCommand));
+gaurdxCommand.name = "gaurdx";
+
+const commands = [guardexCommand, gaurdxCommand];
 
 function ownerOnly(interaction) {
   return interaction.user.id === OWNER_ID;
 }
 
 function applyStatus(mode) {
-  if (mode === "invisible") {
-    client.user.setPresence({ status: "invisible", activities: [] });
-    return;
-  }
+  // VVA Recruiter-style presence: Discord status + a Listening activity.
+  // The status itself is controlled independently from the activity.
+  const activity = {
+    name: "🛡️Gaurding Bots",
+    type: ActivityType.Listening
+  };
 
-  const status = mode === "dnd" ? "dnd" : mode === "idle" ? "idle" : "online";
+  const status = mode === "dnd"
+    ? "dnd"
+    : mode === "idle"
+      ? "idle"
+      : mode === "invisible"
+        ? "invisible"
+        : "online";
+
   client.user.setPresence({
     status,
-    activities: [{
-      name: "🛡️Gaurding Bots",
-      type: ActivityType.Watching
-    }]
+    activities: [activity]
   });
+
+  console.log(`🛡️ Presence set: ${status} | Listening to ${activity.name}`);
 }
 
 function startAutoStatus() {
@@ -215,7 +235,7 @@ client.on("interactionCreate", async interaction => {
 
     const sub = interaction.options.getSubcommand();
 
-    if (sub === "change-status") {
+    if (sub === "change-status" || sub === "status") {
       const mode = interaction.options.getString("status", true);
       currentStatusMode = mode;
 
