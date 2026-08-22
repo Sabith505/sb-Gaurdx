@@ -33,7 +33,8 @@ let currentStatusMode = "online";
 let autoStatusIndex = 0;
 const autoStatuses = ["online", "idle", "dnd"];
 
-const guardexCommand = new SlashCommandBuilder()
+const commands = [
+  new SlashCommandBuilder()
     .setName("guardex")
     .setDescription("SB Guardex controls")
     .addSubcommand(s => s.setName("monitor-add").setDescription("Add a bot health/status URL")
@@ -58,49 +59,28 @@ const guardexCommand = new SlashCommandBuilder()
           { name: "Invisible", value: "invisible" },
           { name: "Auto (1 hour)", value: "auto" }
         )))
-    .addSubcommand(s => s.setName("status").setDescription("Change Guardex Discord status")
-      .addStringOption(o => o.setName("status").setDescription("Choose a status").setRequired(true)
-        .addChoices(
-          { name: "Online", value: "online" },
-          { name: "Idle", value: "idle" },
-          { name: "DND", value: "dnd" },
-          { name: "Invisible", value: "invisible" },
-          { name: "Auto (1 hour)", value: "auto" }
-        )))
     .addSubcommand(s => s.setName("credits").setDescription("Show SB Guardex credits"))
-    .toJSON();
-
-const gaurdxCommand = JSON.parse(JSON.stringify(guardexCommand));
-gaurdxCommand.name = "gaurdx";
-
-const commands = [guardexCommand, gaurdxCommand];
+    .toJSON()
+];
 
 function ownerOnly(interaction) {
   return interaction.user.id === OWNER_ID;
 }
 
 function applyStatus(mode) {
-  // VVA Recruiter-style presence: Discord status + a Listening activity.
-  // The status itself is controlled independently from the activity.
-  const activity = {
-    name: "🛡️Gaurding Bots",
-    type: ActivityType.Listening
-  };
+  if (mode === "invisible") {
+    client.user.setPresence({ status: "invisible", activities: [] });
+    return;
+  }
 
-  const status = mode === "dnd"
-    ? "dnd"
-    : mode === "idle"
-      ? "idle"
-      : mode === "invisible"
-        ? "invisible"
-        : "online";
-
+  const status = mode === "dnd" ? "dnd" : mode === "idle" ? "idle" : "online";
   client.user.setPresence({
     status,
-    activities: [activity]
+    activities: [{
+      name: "🛡️Gaurding Bots",
+      type: ActivityType.Watching
+    }]
   });
-
-  console.log(`🛡️ Presence set: ${status} | Listening to ${activity.name}`);
 }
 
 function startAutoStatus() {
@@ -225,7 +205,7 @@ client.once("ready", async () => {
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "guardex") {
+  if (interaction.commandName === "guardx") {
     if (!ownerOnly(interaction)) {
       return interaction.reply({
         content: "❌ Only the SB Guardex owner can use this command.",
@@ -235,7 +215,7 @@ client.on("interactionCreate", async interaction => {
 
     const sub = interaction.options.getSubcommand();
 
-    if (sub === "change-status" || sub === "status") {
+    if (sub === "change-status") {
       const mode = interaction.options.getString("status", true);
       currentStatusMode = mode;
 
@@ -280,6 +260,7 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
+  if (interaction.commandName !== "guardex") return;
 
   if (!ownerOnly(interaction)) {
     return interaction.reply({
