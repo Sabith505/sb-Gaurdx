@@ -205,7 +205,7 @@ client.once("ready", async () => {
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "guardx") {
+  if (interaction.commandName === "guardex") {
     if (!ownerOnly(interaction)) {
       return interaction.reply({
         content: "❌ Only the SB Guardex owner can use this command.",
@@ -260,7 +260,6 @@ client.on("interactionCreate", async interaction => {
     }
   }
 
-  if (interaction.commandName !== "guardex") return;
 
   if (!ownerOnly(interaction)) {
     return interaction.reply({
