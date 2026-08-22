@@ -1,0 +1,187 @@
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const fs = require("fs");
+
+const TOKEN = process.env.DISCORD_TOKEN;
+const OWNER_ID = process.env.OWNER_ID || "1478812501079490641";
+const CHECK_INTERVAL_MS = Number(process.env.CHECK_INTERVAL_MS || 300000);
+const DATA_FILE = "./bots.json";
+
+if (!TOKEN) {
+  console.error("DISCORD_TOKEN environment variable is missing.");
+  process.exit(1);
+}
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+function loadBots() {
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); }
+  catch { return []; }
+}
+function saveBots(bots) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(bots, null, 2));
+}
+
+let monitoredBots = loadBots();
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName("monitor").setDescription("Manage monitored bots")
+    .addSubcommand(s => s.setName("add").setDescription("Add a bot health/status URL")
+      .addStringOption(o => o.setName("name").setDescription("Bot name").setRequired(true))
+      .addStringOption(o => o.setName("url").setDescription("HTTP health/status URL").setRequired(true)))
+    .addSubcommand(s => s.setName("remove").setDescription("Remove a monitored bot")
+      .addStringOption(o => o.setName("name").setDescription("Bot name").setRequired(true)))
+    .addSubcommand(s => s.setName("list").setDescription("List monitored bots"))
+    .addSubcommand(s => s.setName("status").setDescription("Check all monitored bots now"))
+    .addSubcommand(s => s.setName("check").setDescription("Check one monitored bot")
+      .addStringOption(o => o.setName("name").setDescription("Bot name").setRequired(true)))
+    .toJSON()
+];
+
+async function registerCommands() {
+  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  for (const guild of client.guilds.cache.values()) {
+    await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
+  }
+  console.log("Slash commands registered.");
+}
+
+async function checkBot(bot) {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(bot.url, {
+      method: "GET", signal: controller.signal,
+      headers: { "User-Agent": "SB-Guardex/1.0" }
+    });
+    const ms = Date.now() - started;
+    return { online: response.ok, ms, code: response.status,
+      error: response.ok ? null : `HTTP ${response.status}` };
+  } catch (err) {
+    return { online: false, ms: Date.now() - started, code: null,
+      error: err.name === "AbortError" ? "Timeout" : err.message };
+  } finally { clearTimeout(timer); }
+}
+
+async function dmOwner(title, description, color) {
+  try {
+    const owner = await client.users.fetch(OWNER_ID);
+    const embed = new EmbedBuilder().setColor(color).setTitle(title)
+      .setDescription(description).setTimestamp()
+      .setFooter({ text: "SB Guardex • Bot Monitoring" });
+    await owner.send({ embeds: [embed] });
+  } catch (err) { console.error("Could not DM owner:", err.message); }
+}
+
+async function checkAndNotify(bot) {
+  const result = await checkBot(bot);
+  const oldStatus = bot.online;
+  bot.online = result.online;
+  bot.lastCheck = new Date().toISOString();
+  bot.latency = result.ms;
+  bot.httpCode = result.code;
+  bot.lastError = result.error;
+
+  if (oldStatus !== undefined && oldStatus !== result.online) {
+    if (result.online) {
+      await dmOwner(`🟢 ${bot.name} Recovered`,
+        `**${bot.name}** is back **ONLINE**.\n\n📡 Response: **${result.ms} ms**`, 0x57F287);
+    } else {
+      await dmOwner(`🔴 ${bot.name} Offline`,
+        `**${bot.name}** is **OFFLINE**.\n\n❌ Error: **${result.error || `HTTP ${result.code}`}**`, 0xED4245);
+    }
+  }
+  return result;
+}
+
+async function checkAll() {
+  for (const bot of monitoredBots) await checkAndNotify(bot);
+  saveBots(monitoredBots);
+}
+
+function isOwner(interaction) { return interaction.user.id === OWNER_ID; }
+
+client.once("ready", async () => {
+  console.log(`SB Guardex online as ${client.user.tag}`);
+  console.log(`Monitoring ${monitoredBots.length} bot(s).`);
+  await registerCommands();
+  await checkAll();
+  setInterval(checkAll, CHECK_INTERVAL_MS);
+});
+
+client.on("interactionCreate", async interaction => {
+  if (!interaction.isChatInputCommand() || interaction.commandName !== "monitor") return;
+  if (!isOwner(interaction)) {
+    return interaction.reply({ content: "❌ Only the SB Guardex owner can use this command.", ephemeral: true });
+  }
+
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === "add") {
+    const name = interaction.options.getString("name", true).trim();
+    const url = interaction.options.getString("url", true).trim();
+    if (!/^https?:\/\//i.test(url))
+      return interaction.reply({ content: "❌ URL must start with http:// or https://", ephemeral: true });
+    if (monitoredBots.some(b => b.name.toLowerCase() === name.toLowerCase()))
+      return interaction.reply({ content: "❌ A bot with that name is already monitored.", ephemeral: true });
+
+    const bot = { name, url, online: undefined, lastCheck: null, latency: null, httpCode: null, lastError: null };
+    monitoredBots.push(bot); saveBots(monitoredBots);
+    const result = await checkAndNotify(bot); saveBots(monitoredBots);
+    return interaction.reply({
+      content: `${result.online ? "🟢" : "🔴"} **${name}** added to Guardex.\nStatus: **${result.online ? "ONLINE" : "OFFLINE"}**`,
+      ephemeral: true
+    });
+  }
+
+  if (sub === "remove") {
+    const name = interaction.options.getString("name", true);
+    const before = monitoredBots.length;
+    monitoredBots = monitoredBots.filter(b => b.name.toLowerCase() !== name.toLowerCase());
+    if (monitoredBots.length === before)
+      return interaction.reply({ content: "❌ Bot not found.", ephemeral: true });
+    saveBots(monitoredBots);
+    return interaction.reply({ content: `🗑️ **${name}** removed from Guardex.`, ephemeral: true });
+  }
+
+  if (sub === "list") {
+    if (!monitoredBots.length)
+      return interaction.reply({ content: "📭 No bots are being monitored yet.", ephemeral: true });
+    const lines = monitoredBots.map(b =>
+      `${b.online ? "🟢" : b.online === false ? "🔴" : "⚪"} **${b.name}** — ${b.online ? `${b.latency ?? "?"} ms` : b.lastError || "Not checked"}`
+    );
+    return interaction.reply({
+      embeds: [new EmbedBuilder().setColor(0x7C3AED).setTitle("🛡️ SB Guardex")
+        .setDescription(lines.join("\n")).setFooter({ text: `${monitoredBots.length} bot(s) monitored` })],
+      ephemeral: true
+    });
+  }
+
+  if (sub === "status") {
+    await interaction.deferReply({ ephemeral: true });
+    await checkAll();
+    const lines = monitoredBots.map(b =>
+      `${b.online ? "🟢" : "🔴"} **${b.name}** — ${b.online ? `ONLINE • ${b.latency} ms` : `OFFLINE • ${b.lastError || "Unknown error"}`}`
+    );
+    return interaction.editReply({
+      embeds: [new EmbedBuilder().setColor(0x7C3AED).setTitle("📡 Guardex Status")
+        .setDescription(lines.length ? lines.join("\n") : "No monitored bots.")]
+    });
+  }
+
+  if (sub === "check") {
+    const name = interaction.options.getString("name", true);
+    const bot = monitoredBots.find(b => b.name.toLowerCase() === name.toLowerCase());
+    if (!bot) return interaction.reply({ content: "❌ Bot not found.", ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    const result = await checkAndNotify(bot); saveBots(monitoredBots);
+    return interaction.editReply(result.online
+      ? `🟢 **${bot.name}** — ONLINE • ${result.ms} ms • HTTP ${result.code}`
+      : `🔴 **${bot.name}** — OFFLINE • ${result.error}`);
+  }
+});
+
+process.on("unhandledRejection", err => console.error("Unhandled rejection:", err));
+process.on("uncaughtException", err => console.error("Uncaught exception:", err));
+client.login(TOKEN);
